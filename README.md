@@ -1,5 +1,7 @@
 # Obsiclipcapture
 
+> ⚠️ **Written entirely by Claude.** Every line of code here, and both README files, were produced by Claude — Anthropic's AI assistant — in a chat conversation. The repository owner set the requirements and tested the result in daily use; no human has reviewed the code line by line. Use at your own risk.
+
 A Windows tray utility that writes into an Obsidian vault without Obsidian running. Two jobs, one process, one tray icon:
 
 | Job | Default hotkey | What happens |
