@@ -120,3 +120,5 @@ Start with `obsiclipcapture.log` next to the script. Every launch and every comp
 | `Obsiclipcapture.bat` | Optional batch wrapper around `start.vbs` |
 | `obsiclipcapture.cfg` | Settings. Created on first run |
 | `obsiclipcapture.log` | Launch and error log |
+
+`obsiclipcapture.cfg` and `obsiclipcapture.log` hold local paths — worth keeping out of commits.

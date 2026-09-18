@@ -120,3 +120,5 @@ tags: ежедневка
 | `Obsiclipcapture.bat` | Батник-обёртка над `start.vbs`, по желанию |
 | `obsiclipcapture.cfg` | Настройки. Создаётся при первом запуске |
 | `obsiclipcapture.log` | Лог запусков и ошибок |
+
+В `obsiclipcapture.cfg` и `obsiclipcapture.log` лежат локальные пути — их стоит держать вне коммитов.

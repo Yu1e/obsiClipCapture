@@ -75,6 +75,9 @@ public class AppSettings {
     // ── капча ───────────────────────────────────────────────
     public string CapFolder     { get; set; }
     public string CapFileName   { get; set; }
+    public string CapHeader     { get; set; }
+    public string NavSource     { get; set; }
+    public string NavTarget     { get; set; }
     public string CapEntry      { get; set; }
     public string CapSeparator  { get; set; }
     public List<string[]> CapProps { get; set; }
@@ -105,6 +108,9 @@ public class AppSettings {
 
         CapFolder    = "Накопитель";
         CapFileName  = "{date:yyyy-MM-dd}-ежедневка.md";
+        CapHeader    = "![[Навигация_ежедневок]]";
+        NavSource    = "nav-header.md";
+        NavTarget    = "Serv\\Scripts\\Навигация_ежедневок.md";
         CapEntry     = "{clock} {text}";
         CapSeparator = "\n\n";
         CapProps     = new List<string[]>();
@@ -151,6 +157,9 @@ public class AppSettings {
                     }
                     case "cap_folder":    CapFolder    = v; break;
                     case "cap_filename":  CapFileName  = v; break;
+                    case "cap_header":    CapHeader    = Unesc(v); break;
+                    case "nav_source":    NavSource    = v; break;
+                    case "nav_target":    NavTarget    = v; break;
                     case "cap_entry":     CapEntry     = Unesc(v); break;
                     case "cap_separator": CapSeparator = Unesc(v); break;
                     case "cap_theme":     CapTheme     = v; break;
@@ -217,6 +226,9 @@ public class AppSettings {
         }
         lines.Add("cap_folder="    + (CapFolder   ?? ""));
         lines.Add("cap_filename="  + (CapFileName ?? ""));
+        lines.Add("cap_header="    + Esc(CapHeader));
+        lines.Add("nav_source="    + (NavSource ?? ""));
+        lines.Add("nav_target="    + (NavTarget ?? ""));
         lines.Add("cap_entry="     + Esc(CapEntry));
         lines.Add("cap_separator=" + Esc(CapSeparator));
         lines.Add("cap_hk_ctrl="   + CapHkCtrl.ToString().ToLower());
@@ -297,6 +309,52 @@ public class AppSettings {
             s = s.Substring(0, a) + val + s.Substring(b + 1);
         }
         return s.Replace("{clock}", Clock(now)).Replace("{text}", text ?? "");
+    }
+}
+
+// ════════════════════════════════════════════════════════════
+// Служебная заметка навигации: оригинал лежит рядом со скриптом,
+// в хранилище уезжает копия. Проверяется при запуске, после
+// сохранения настроек и перед созданием каждой новой ежедневки.
+// ════════════════════════════════════════════════════════════
+public static class Nav {
+    public static string LastError = "";
+
+    public static string SourcePath(AppSettings st) {
+        if (string.IsNullOrEmpty(st.NavSource)) return null;
+        string dir = Path.GetDirectoryName(st.SettingsPath ?? "");
+        if (string.IsNullOrEmpty(dir)) return null;
+        return Path.Combine(dir, st.NavSource);
+    }
+
+    public static string TargetPath(AppSettings st) {
+        if (string.IsNullOrEmpty(st.NavTarget)) return null;
+        if (string.IsNullOrEmpty(st.VaultPath)) return null;
+        return Path.Combine(st.VaultPath, st.NavTarget);
+    }
+
+    // true — заметка была записана заново
+    public static bool Ensure(AppSettings st) {
+        LastError = "";
+        try {
+            string src = SourcePath(st);
+            string dst = TargetPath(st);
+            if (src == null || dst == null) return false;
+            if (!File.Exists(src)) {
+                LastError = "Файл " + st.NavSource + " не найден рядом со скриптом";
+                return false;
+            }
+            var enc  = new UTF8Encoding(false);
+            string want = File.ReadAllText(src, enc);
+            if (File.Exists(dst) && File.ReadAllText(dst, enc) == want) return false;
+            string dir = Path.GetDirectoryName(dst);
+            if (!Directory.Exists(dir)) Directory.CreateDirectory(dir);
+            File.WriteAllText(dst, want, enc);
+            return true;
+        } catch (Exception ex) {
+            LastError = ex.Message;
+            return false;
+        }
     }
 }
 
@@ -394,6 +452,8 @@ public class SettingsForm : Form {
         r.HotkeyCtrl = s.HotkeyCtrl; r.HotkeyAlt = s.HotkeyAlt;
         r.HotkeyShift = s.HotkeyShift; r.HotkeyVk = s.HotkeyVk;
         r.CapFolder = s.CapFolder; r.CapFileName = s.CapFileName;
+        r.CapHeader = s.CapHeader;
+        r.NavSource = s.NavSource; r.NavTarget = s.NavTarget;
         r.CapEntry = s.CapEntry; r.CapSeparator = s.CapSeparator;
         r.CapProps = new List<string[]>(s.CapProps);
         r.CapHkCtrl = s.CapHkCtrl; r.CapHkAlt = s.CapHkAlt; r.CapHkShift = s.CapHkShift;
@@ -453,7 +513,7 @@ public class SettingsForm : Form {
 // ════════════════════════════════════════════════════════════
 public class CaptureSettingsForm : Form {
     public AppSettings Result;
-    TextBox txFolder, txFile, txEntry, txSep, txFont;
+    TextBox txFolder, txFile, txHeader, txEntry, txSep, txFont;
     NumericUpDown numSize, numFlash;
     ComboBox cbTheme, cbBare, cbKey;
     CheckBox ckCtrl, ckAlt, ckShift;
@@ -463,7 +523,7 @@ public class CaptureSettingsForm : Form {
         Text = "Настройки быстрых заметок";
         FormBorderStyle = FormBorderStyle.FixedDialog;
         StartPosition   = FormStartPosition.CenterScreen;
-        ClientSize      = new Size(488, 616);
+        ClientSize      = new Size(488, 668);
         MaximizeBox = false; MinimizeBox = false;
         TopMost = true;
 
@@ -475,6 +535,11 @@ public class CaptureSettingsForm : Form {
         AddL("Шаблон имени файла:", lx, y, rw); y += 20;
         txFile = AddT(s.CapFileName ?? "", lx, y, rw);
         AddLG("{date:ФОРМАТ} — дата; подпапки допустимы: {date:yyyy}\\\\{date:MM}.md", lx, y + 26, rw);
+        y += 52;
+
+        AddL("Строка при создании файла:", lx, y, rw); y += 20;
+        txHeader = AddT(s.CapHeader ?? "", lx, y, rw);
+        AddLG("Пишется один раз, при создании файла. Пусто — ничего не добавляется.", lx, y + 26, rw);
         y += 52;
 
         AddL("Шаблон записи:", lx, y, 222);
@@ -553,6 +618,7 @@ public class CaptureSettingsForm : Form {
             Result = SettingsForm.Clone(cur);
             Result.CapFolder    = txFolder.Text.Trim();
             Result.CapFileName  = txFile.Text.Trim();
+            Result.CapHeader    = txHeader.Text;
             Result.CapEntry     = txEntry.Text;
             Result.CapSeparator = txSep.Text.Replace("\\n", "\n");
             Result.CapProps     = SettingsForm.ReadGrid(dgv);
@@ -708,6 +774,7 @@ public class CaptureForm : Form {
     }
 
     void SaveNote() {
+        Nav.Ensure(st);
         DateTime now = DateTime.Now;
         string dir  = ResolveFolder();
         string rel  = AppSettings.Expand(st.CapFileName ?? "note.md", now, null);
@@ -731,7 +798,10 @@ public class CaptureForm : Form {
                         fm += p[0] + ": " + AppSettings.Expand(p.Length > 1 ? p[1] : "", now, null) + "\n";
                 fm += "---\n\n";
             }
-            outText = fm + entry + "\n";
+            string hdr = "";
+            if (!string.IsNullOrEmpty(st.CapHeader))
+                hdr = st.CapHeader + "\n\n";
+            outText = fm + hdr + entry + "\n";
         }
         File.WriteAllText(path, outText, enc);
         SavedPath = path;
@@ -838,6 +908,8 @@ public class MainForm : Form {
         var menu = new ContextMenuStrip();
         menu.Items.Add("Новая заметка", null, delegate { ShowCapture(); });
         menu.Items.Add("-");
+        menu.Items.Add("Восстановить шапку навигации", null, delegate { RestoreNav(); });
+        menu.Items.Add("-");
         menu.Items.Add("Настройки клиппера", null, delegate { OpenSettings(); });
         menu.Items.Add("Настройки заметок",  null, delegate { OpenCapSettings(); });
         menu.Items.Add("-");
@@ -856,7 +928,7 @@ public class MainForm : Form {
         poll = new Timer { Interval = 40 };
         poll.Tick += OnPoll;
 
-        if (!firstRun) { RegisterHotkeys(); UpdateTrayText(); }
+        if (!firstRun) { Nav.Ensure(settings); RegisterHotkeys(); UpdateTrayText(); }
         else tray.Text = "Obsiclipcapture — настройка...";
     }
 
@@ -868,6 +940,7 @@ public class MainForm : Form {
             try { tray.ShowBalloonTip(8000, "Obsiclipcapture", ex.Message, ToolTipIcon.Error); } catch {}
         }
         if (string.IsNullOrEmpty(settings.VaultPath)) { Application.Exit(); return; }
+        Nav.Ensure(settings);
         RegisterHotkeys(); UpdateTrayText(); firstRun = false;
     }
 
@@ -904,11 +977,23 @@ public class MainForm : Form {
         } catch {}
     }
 
+    void RestoreNav() {
+        bool written = Nav.Ensure(settings);
+        string msg;
+        if (Nav.LastError.Length > 0)      msg = "Не удалось: " + Nav.LastError;
+        else if (written)                  msg = "Служебная заметка навигации записана заново.";
+        else if (Nav.TargetPath(settings) == null) msg = "Навигация отключена: пуст ключ nav_target или путь к хранилищу.";
+        else                               msg = "Служебная заметка на месте и совпадает с оригиналом.";
+        try { tray.ShowBalloonTip(5000, "Obsiclipcapture", msg,
+              Nav.LastError.Length > 0 ? ToolTipIcon.Warning : ToolTipIcon.Info); } catch {}
+    }
+
     void OpenSettings() {
         using (SettingsForm form = new SettingsForm(settings)) {
             if (form.ShowDialog() != DialogResult.OK || form.Result == null) return;
             settings = form.Result;
             settings.Save();
+            Nav.Ensure(settings);
             UnregisterHotkeys(); RegisterHotkeys(); UpdateTrayText();
         }
     }
@@ -923,6 +1008,7 @@ public class MainForm : Form {
             if (form.ShowDialog() != DialogResult.OK || form.Result == null) return;
             settings = form.Result;
             settings.Save();
+            Nav.Ensure(settings);
             UnregisterHotkeys(); RegisterHotkeys(); UpdateTrayText();
         }
     }
