@@ -43,6 +43,14 @@ To skip the wizard, drop a prepared `obsiclipcapture.cfg` next to the script bef
 
 Text closed with `Escape` is kept as a draft and comes back on the next call, until the utility restarts. The window remembers its size and position the moment you close it.
 
+A hint bar runs along the bottom of the window: on the left, how to call it; on the right, the buttons "Сохранить · Ctrl+Enter" and "Отмена · Esc". Focus goes into the input field as soon as the window appears.
+
+You can drag into the window with the mouse:
+- text — inserted as is;
+- a link — inserted as `[text](address)`, or as the bare address when there is no text;
+- an image — saved to the clipper's attachments folder and inserted as `![[…]]`;
+- a file from Explorer — images go to attachments, other files are inserted by full path.
+
 A day's file ends up looking like this:
 
 ```markdown
@@ -57,6 +65,16 @@ tags: ежедневка
 ```
 
 The clock emoji steps in half-hour increments — 🕐 🕜 🕑 🕝 and so on — which keeps a sense of when a note was written without stamping an exact time on it.
+
+## Clips from the same page
+
+Clips taken from the same page are appended to one note instead of creating new ones. A "page" is the address in the browser, or the window title in other programs (for example, a Telegram chat).
+
+- Only notes in the clips folder (top level) are searched. A note moved elsewhere is not found, and a new one is created.
+- Appending works for `clip_same_note_hours` hours after the note was created (default 48). `0` means no limit.
+- Clips are separated by the line `꧁இ꧂` with a blank line before and after; change it with `clip_separator`.
+- The Templater command does not run when appending.
+- To turn it off: untick the box in the clipper settings, or set `clip_same_note=false`.
 
 ## Settings
 
