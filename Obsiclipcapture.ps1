@@ -1453,7 +1453,7 @@ public class MainForm : Form {
         settings = new AppSettings(settingsPath);
         firstRun = !settings.Load();
 
-        tray = new NotifyIcon { Icon = SystemIcons.Information, Visible = true };
+        tray = new NotifyIcon { Icon = LoadTrayIcon(settingsPath), Visible = true };
         var menu = new ContextMenuStrip();
         menu.Items.Add("Новая заметка", null, delegate { ShowCapture(); });
         menu.Items.Add("-");
@@ -1479,6 +1479,16 @@ public class MainForm : Form {
 
         if (!firstRun) { Nav.Ensure(settings); RegisterHotkeys(); UpdateTrayText(); }
         else tray.Text = "Obsiclipcapture — настройка...";
+    }
+
+    // Значок трея: Obsiclipcapture.ico рядом с настройками, иначе стандартный
+    static Icon LoadTrayIcon(string settingsPath) {
+        try {
+            string dir = Path.GetDirectoryName(settingsPath ?? "") ?? "";
+            string p = Path.Combine(dir, "Obsiclipcapture.ico");
+            if (File.Exists(p)) return new Icon(p);
+        } catch {}
+        return SystemIcons.Information;
     }
 
     protected override void OnLoad(EventArgs e) {
