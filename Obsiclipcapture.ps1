@@ -915,10 +915,26 @@ public class CaptureForm : Form {
     }
 
     void DoSave() {
-        if (box.Text.Trim().Length > 0) { SaveNote(); }
+        bool wrote = box.Text.Trim().Length > 0;
+        if (wrote) { SaveNote(); }
         Draft = "";
         saved = true;
+        if (wrote) ShowSaved();
         Close();
+    }
+
+    // Подтверждение записи: всплывашка как у клиппера, с переходом в заметку
+    void ShowSaved() {
+        try {
+            string vault = (st.VaultPath ?? "").TrimEnd('\\', '/');
+            string goUri = SavedPath;
+            if (vault.Length > 0 && SavedPath.StartsWith(vault, StringComparison.OrdinalIgnoreCase)) {
+                string rel = SavedPath.Substring(vault.Length).TrimStart('\\', '/').Replace('\\', '/');
+                goUri = "obsidian://open?vault=" + Uri.EscapeDataString(Path.GetFileName(vault))
+                      + "&file=" + Uri.EscapeDataString(rel);
+            }
+            new NotePopup("Записано: " + Path.GetFileName(SavedPath), goUri).Show();
+        } catch {}
     }
 
     void DoCancel() {
@@ -1457,8 +1473,6 @@ public class MainForm : Form {
         var menu = new ContextMenuStrip();
         menu.Items.Add("Новая заметка", null, delegate { ShowCapture(); });
         menu.Items.Add("-");
-        menu.Items.Add("Восстановить шапку навигации", null, delegate { RestoreNav(); });
-        menu.Items.Add("-");
         menu.Items.Add("Настройки клиппера", null, delegate { OpenSettings(); });
         menu.Items.Add("Настройки заметок",  null, delegate { OpenCapSettings(); });
         menu.Items.Add("-");
@@ -1534,17 +1548,6 @@ public class MainForm : Form {
             tray.Text = "Obsiclipcapture  клип [" + settings.GetHotkeyDisplay()
                       + "]  заметка [" + settings.GetCapHotkeyDisplay() + "]";
         } catch {}
-    }
-
-    void RestoreNav() {
-        bool written = Nav.Ensure(settings);
-        string msg;
-        if (Nav.LastError.Length > 0)      msg = "Не удалось: " + Nav.LastError;
-        else if (written)                  msg = "Служебная заметка навигации записана заново.";
-        else if (Nav.TargetPath(settings) == null) msg = "Навигация отключена: пуст ключ nav_target или путь к хранилищу.";
-        else                               msg = "Служебная заметка на месте и совпадает с оригиналом.";
-        try { tray.ShowBalloonTip(5000, "Obsiclipcapture", msg,
-              Nav.LastError.Length > 0 ? ToolTipIcon.Warning : ToolTipIcon.Info); } catch {}
     }
 
     void OpenSettings() {
