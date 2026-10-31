@@ -12,6 +12,14 @@ function Write-Log($msg) {
     Add-Content -Path $LogFile -Value "[$stamp] $msg" -Encoding UTF8 -ErrorAction SilentlyContinue
 }
 
+# Одна копия на сеанс: второй запуск тихо закрывается
+$MutexCreated  = $false
+$InstanceMutex = New-Object System.Threading.Mutex($true, "Local\ObsiclipcaptureYule", [ref]$MutexCreated)
+if (-not $MutexCreated) {
+    Write-Log "Вторая копия: утилита уже запущена, этот запуск закрыт"
+    exit 0
+}
+
 Start-Sleep -Seconds 3
 Write-Log "=== START  ScriptDir=$ScriptDir"
 Write-Log "SettingsFile=$SettingsFile  Exists=$(Test-Path $SettingsFile)"
@@ -385,10 +393,17 @@ public static class AppIcon {
     public static Icon Small;
 
     public static void Load(string dir) {
+        string p = Path.Combine(dir ?? "", "obsiclipcapture.ico");
+        if (!File.Exists(p)) { Diag.Write("Значок: файл не найден: " + p); return; }
         try {
-            string p = Path.Combine(dir ?? "", "obsiclipcapture.ico");
-            if (File.Exists(p)) Small = new Icon(p, SystemInformation.SmallIconSize);
-        } catch { Small = null; }
+            Small = new Icon(p, SystemInformation.SmallIconSize);
+            Diag.Write("Значок: загружен " + Small.Width + "x" + Small.Height);
+            return;
+        } catch (Exception ex) { Diag.Write("Значок: ошибка загрузки с размером: " + ex.Message); }
+        try {
+            Small = new Icon(p);
+            Diag.Write("Значок: загружен без размера " + Small.Width + "x" + Small.Height);
+        } catch (Exception ex) { Small = null; Diag.Write("Значок: ошибка загрузки: " + ex.Message); }
     }
 
     public static void Apply(Form f) {
