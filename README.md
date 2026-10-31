@@ -2,8 +2,8 @@
 
 # Obsiclipcapture
 
-> ⚠️ **Written entirely by Claude** (Anthropic's AI assistant). No human has reviewed the code line by line. Use at your own risk.
-> ⚠️ **Написано полностью Клодом** (ИИ-ассистент Anthropic). Построчной проверки кода человеком не было. Используйте на свой риск.
+> ⚠️ **Written entirely by Claude or another AI model** (Claude is Anthropic's AI assistant). No human has reviewed the code line by line. Use at your own risk.
+> ⚠️ **Написано полностью Клодом или другой ИИ-моделью** (Клод — ИИ-ассистент Anthropic). Построчной проверки кода человеком не было. Используйте на свой риск.
 
 <details>
 <summary><b>🇬🇧 English</b></summary>
