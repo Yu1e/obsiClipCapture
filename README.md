@@ -5,7 +5,7 @@
 > ⚠️ **Written entirely by Claude** (Anthropic's AI assistant). No human has reviewed the code line by line. Use at your own risk.
 > ⚠️ **Написано полностью Клодом** (ИИ-ассистент Anthropic). Построчной проверки кода человеком не было. Используйте на свой риск.
 
-<details open>
+<details>
 <summary><b>🇬🇧 English</b></summary>
 
 A Windows tray utility that writes into an Obsidian vault. Obsidian does not need to be running.
