@@ -1,3 +1,5 @@
+<p align="center"><img src="obsiclipcapture.svg" width="96" alt="Obsiclipcapture"></p>
+
 # Obsiclipcapture
 
 > ⚠️ **Written entirely by Claude** (Anthropic's AI assistant). No human has reviewed the code line by line. Use at your own risk.
@@ -17,7 +19,7 @@ A Windows tray utility that writes into an Obsidian vault. Obsidian does not nee
 
 ## First run
 
-1. Put `Obsiclipcapture.ps1`, `start.vbs` and `nav-header.md` in one folder. Keep the script saved as UTF-8 **with BOM**, otherwise Cyrillic in the tray menu turns into garbage.
+1. Put `Obsiclipcapture.ps1`, `start.vbs`, `nav-header.md` and `obsiclipcapture.ico` (the tray icon, optional) in one folder. Keep the script saved as UTF-8 **with BOM**, otherwise Cyrillic in the tray menu turns into garbage.
 2. Run `start.vbs`. The tray icon appears after about three seconds.
 3. The **Настройки клиппера** window opens by itself. Enter the full path to the vault, the clip folder and the attachments folder (paths inside the vault, for example `Накопитель` and `Serv\Attachments`). Save.
 4. Right-click the icon → **Настройки заметок**. Check the capture folder and the filename template, change the hotkey if needed. Save.

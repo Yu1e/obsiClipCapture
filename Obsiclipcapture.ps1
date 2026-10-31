@@ -378,6 +378,24 @@ public static class Nav {
 // ════════════════════════════════════════════════════════════
 // Запись в obsiclipcapture.log из C#: путь к логу задаёт PowerShell
 // ════════════════════════════════════════════════════════════
+// ════════════════════════════════════════════════════════════
+// Значок приложения: obsiclipcapture.ico рядом со скриптом (необязателен)
+// ════════════════════════════════════════════════════════════
+public static class AppIcon {
+    public static Icon Small;
+
+    public static void Load(string dir) {
+        try {
+            string p = Path.Combine(dir ?? "", "obsiclipcapture.ico");
+            if (File.Exists(p)) Small = new Icon(p, SystemInformation.SmallIconSize);
+        } catch { Small = null; }
+    }
+
+    public static void Apply(Form f) {
+        try { if (Small != null) f.Icon = Small; } catch { }
+    }
+}
+
 public static class Diag {
     public static string LogPath;
 
@@ -700,6 +718,7 @@ public class SameNoteForm : Form {
 
     public SameNoteForm(string host, string noteName, string pageFolder, string known, int hours) {
         Text            = "Вырезка с сайта " + host;
+        AppIcon.Apply(this);
         FormBorderStyle = FormBorderStyle.FixedDialog;
         StartPosition   = FormStartPosition.CenterScreen;
         MaximizeBox     = false;
@@ -780,6 +799,7 @@ public class SettingsForm : Form {
 
     public SettingsForm(AppSettings s) {
         Text = "Настройки клиппера";
+        AppIcon.Apply(this);
         FormBorderStyle = FormBorderStyle.FixedDialog;
         StartPosition   = FormStartPosition.CenterScreen;
         ClientSize      = new Size(488, 620);
@@ -938,6 +958,7 @@ public class CaptureSettingsForm : Form {
 
     public CaptureSettingsForm(AppSettings s) {
         Text = "Настройки быстрых заметок";
+        AppIcon.Apply(this);
         FormBorderStyle = FormBorderStyle.FixedDialog;
         StartPosition   = FormStartPosition.CenterScreen;
         ClientSize      = new Size(488, 668);
@@ -1149,6 +1170,7 @@ public class CaptureForm : Form {
         }
 
         Text            = "Заметка";
+        AppIcon.Apply(this);
         FormBorderStyle = FormBorderStyle.Sizable;
         ShowInTaskbar   = false;
         TopMost         = true;
@@ -1822,7 +1844,8 @@ public class MainForm : Form {
         settings = new AppSettings(settingsPath);
         firstRun = !settings.Load();
 
-        tray = new NotifyIcon { Icon = SystemIcons.Information, Visible = true };
+        AppIcon.Load(Path.GetDirectoryName(settingsPath));
+        tray = new NotifyIcon { Icon = AppIcon.Small ?? SystemIcons.Information, Visible = true };
         var menu = new ContextMenuStrip();
         menu.Items.Add("Новая заметка", null, delegate { ShowCapture(); });
         menu.Items.Add("-");

@@ -1,0 +1,26 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" width="128" height="128">
+  <defs>
+    <linearGradient id="note" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#9577FF"/>
+      <stop offset="1" stop-color="#5836D2"/>
+    </linearGradient>
+    <linearGradient id="bolt" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#FFF37A"/>
+      <stop offset="1" stop-color="#FFC400"/>
+    </linearGradient>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#232A44"/>
+      <stop offset="1" stop-color="#0E1224"/>
+    </linearGradient>
+  </defs>
+  <rect width="128" height="128" rx="28" fill="url(#bg)"/>
+  <line x1="16" y1="24" x2="34" y2="36" stroke="#7C8CFF" stroke-opacity="0.55" stroke-width="2"/><line x1="112" y1="22" x2="94" y2="34" stroke="#7C8CFF" stroke-opacity="0.55" stroke-width="2"/><line x1="14" y1="100" x2="34" y2="92" stroke="#7C8CFF" stroke-opacity="0.55" stroke-width="2"/><line x1="113" y1="104" x2="94" y2="96" stroke="#7C8CFF" stroke-opacity="0.55" stroke-width="2"/><line x1="112" y1="64" x2="94" y2="64" stroke="#7C8CFF" stroke-opacity="0.55" stroke-width="2"/><line x1="15" y1="62" x2="34" y2="64" stroke="#7C8CFF" stroke-opacity="0.55" stroke-width="2"/><circle cx="16" cy="24" r="5" fill="#5CF1FF"/><circle cx="112" cy="22" r="4" fill="#FF5CC8"/><circle cx="14" cy="100" r="4" fill="#FFE45C"/><circle cx="113" cy="104" r="5" fill="#8F72FF"/><circle cx="112" cy="64" r="3.5" fill="#5CF1FF"/><circle cx="15" cy="62" r="3.5" fill="#FF5CC8"/>
+  <rect x="34" y="16" width="60" height="96" rx="10" fill="url(#note)"/>
+  <g fill="#FFFFFF" fill-opacity="0.93">
+    <rect x="44" y="30" width="40" height="6" rx="3"/>
+    <rect x="44" y="42" width="30" height="6" rx="3"/>
+    <rect x="44" y="86" width="34" height="6" rx="3"/>
+    <rect x="44" y="98" width="24" height="6" rx="3"/>
+  </g>
+  <polygon points="78,6 40,66 62,66 48,122 92,52 70,52" fill="url(#bolt)" stroke="#FFFFFF" stroke-width="2.5" stroke-linejoin="round"/>
+</svg>
