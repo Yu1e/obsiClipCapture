@@ -31,17 +31,6 @@ Settings live in `obsiclipcapture.cfg` next to the script. To skip the windows, 
 
 **Autostart:** `Win+R` → `shell:startup` → put a shortcut to `start.vbs` there.
 
-## If something does not work
-
-Open `obsiclipcapture.log` next to the script first: it holds every launch, every error and the focus result of the note window.
-
-- **No tray icon.** Run `Obsiclipcapture.ps1` from a PowerShell window, the error text will be on screen.
-- **A hotkey is silent.** Another program holds that combination. Change it in the settings.
-- **The note window has no cursor.** Find the line `Окно заметки: фокус НЕ получен` in the log, it ends with the program that kept the foreground.
-- **Notes land in the wrong place.** Relative folders are resolved against the vault path, so an empty vault path sends notes somewhere unexpected.
-- **The tray icon is still the round "info" one.** Put the fresh `Obsiclipcapture.ps1` and `obsiclipcapture.ico` into the same folder and restart. The log line starting with `Значок:` says what happened to the icon.
-- **A second launch shows nothing.** The utility is already running: only one copy lives at a time. The log notes the ignored launch.
-
 </details>
 
 <details>
@@ -69,16 +58,5 @@ Open `obsiclipcapture.log` next to the script first: it holds every launch, ever
 Настройки лежат в `obsiclipcapture.cfg` рядом со скриптом. Чтобы обойтись без окон, можно положить готовый `obsiclipcapture.cfg` в папку до первого запуска.
 
 **Автозапуск:** `Win+R` → `shell:startup` → положить туда ярлык на `start.vbs`.
-
-## Если что-то не работает
-
-Первым делом открыть `obsiclipcapture.log` рядом со скриптом: там каждый запуск, каждая ошибка и результат захвата фокуса окном заметки.
-
-- **Иконки нет.** Запустить `Obsiclipcapture.ps1` из окна PowerShell, текст ошибки будет на экране.
-- **Сочетание молчит.** Его занимает другая программа. Сменить сочетание в настройках.
-- **В окне заметки нет курсора.** Найти в логе строку `Окно заметки: фокус НЕ получен`, в её конце названа программа, державшая передний план.
-- **Заметка уходит не туда.** Относительные папки считаются от пути к хранилищу, поэтому пустой путь к хранилищу даёт неожиданное место.
-- **В трее по-прежнему круглая «информация».** Положить свежие `Obsiclipcapture.ps1` и `obsiclipcapture.ico` в одну папку и перезапустить. Строка лога, начинающаяся с `Значок:`, говорит, что случилось со значком.
-- **Повторный запуск ничего не показывает.** Утилита уже работает: копия живёт одна. Проигнорированный запуск записывается в лог.
 
 </details>
