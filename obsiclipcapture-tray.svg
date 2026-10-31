@@ -10,5 +10,5 @@
     </linearGradient>
   </defs>
   <polygon points="64,1 121,64 64,127 7,64" fill="url(#rh)" stroke="#FFFFFF" stroke-width="5" stroke-linejoin="round"/>
-  <polygon points="78,6 40,66 62,66 48,122 92,52 70,52" fill="url(#bolt)" stroke="#3A1E9E" stroke-width="5" stroke-linejoin="round"/>
+  <polygon points="86,0 33,71 60,71 43,128 99,49 72,49" fill="url(#bolt)" stroke="#FFFFFF" stroke-width="4" stroke-linejoin="round"/>
 </svg>
