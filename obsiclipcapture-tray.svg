@@ -1,0 +1,14 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" width="128" height="128">
+  <defs>
+    <linearGradient id="note" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#9577FF"/>
+      <stop offset="1" stop-color="#5836D2"/>
+    </linearGradient>
+    <linearGradient id="bolt" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#FFF37A"/>
+      <stop offset="1" stop-color="#FFC400"/>
+    </linearGradient></defs>
+  <polygon points="64,1 121,64 64,127 7,64" fill="url(#note)" stroke="url(#note)" stroke-width="2" stroke-linejoin="round"/>
+  <polygon points="64,1 121,64 64,127 7,64" fill="none" stroke="#C9B8FF" stroke-opacity="0.55" stroke-width="3" stroke-linejoin="round" transform="translate(64 64) scale(0.9) translate(-64 -64)"/>
+  <polygon points="78,6 40,66 62,66 48,122 92,52 70,52" fill="url(#bolt)" stroke="#2B1A66" stroke-width="5" stroke-linejoin="round"/>
+</svg>
