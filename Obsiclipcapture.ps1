@@ -36,6 +36,8 @@ using System.Diagnostics;
 using System.Windows.Forms;
 using System.Runtime.InteropServices;
 using System.Collections.Generic;
+using System.Text.RegularExpressions;
+using System.Globalization;
 
 // ════════════════════════════════════════════════════════════
 // Настройки — одна связка на клип и капчу
@@ -55,6 +57,9 @@ public class AppSettings {
     };
     public static readonly int[] BARE_VKS = { 0, 0xA5, 0xA3, 0xA1, 0xA4 };
 
+    // Разделитель вырезок в одной заметке: U+A9C1 U+0B87 U+A9C2 отдельной строкой
+    public const string DefaultClipSeparator = "\n\n\uA9C1\u0B87\uA9C2\n\n";
+
     public string SettingsPath  { get; set; }
 
     // ── общее ───────────────────────────────────────────────
@@ -71,6 +76,9 @@ public class AppSettings {
     public bool   HotkeyAlt     { get; set; }
     public bool   HotkeyShift   { get; set; }
     public uint   HotkeyVk      { get; set; }
+    public bool   ClipSameNote  { get; set; }
+    public string ClipSeparator { get; set; }
+    public int    ClipSameNoteHours { get; set; }
 
     // ── капча ───────────────────────────────────────────────
     public string CapFolder     { get; set; }
@@ -105,6 +113,9 @@ public class AppSettings {
         HotkeyAlt    = true;
         HotkeyShift  = false;
         HotkeyVk     = 0x77;
+        ClipSameNote  = true;
+        ClipSeparator = DefaultClipSeparator;
+        ClipSameNoteHours = 48;
 
         CapFolder    = "Накопитель";
         CapFileName  = "{date:yyyy-MM-dd}-ежедневка.md";
@@ -155,6 +166,9 @@ public class AppSettings {
                     case "hotkey_vk": {
                         uint vk; if (uint.TryParse(v, out vk)) HotkeyVk = vk; break;
                     }
+                    case "clip_same_note": ClipSameNote  = (v == "true"); break;
+                    case "clip_separator": ClipSeparator = Unesc(v); break;
+                    case "clip_same_note_hours": { int i; if (int.TryParse(v, out i)) ClipSameNoteHours = i; break; }
                     case "cap_folder":    CapFolder    = v; break;
                     case "cap_filename":  CapFileName  = v; break;
                     case "cap_header":    CapHeader    = Unesc(v); break;
@@ -220,6 +234,9 @@ public class AppSettings {
         lines.Add("hotkey_alt="   + HotkeyAlt.ToString().ToLower());
         lines.Add("hotkey_shift=" + HotkeyShift.ToString().ToLower());
         lines.Add("hotkey_vk="    + HotkeyVk.ToString());
+        lines.Add("clip_same_note=" + ClipSameNote.ToString().ToLower());
+        lines.Add("clip_separator=" + Esc(ClipSeparator ?? DefaultClipSeparator));
+        lines.Add("clip_same_note_hours=" + ClipSameNoteHours.ToString());
         for (int i = 0; i < Props.Count; i++) {
             lines.Add("prop_name_"  + i + "=" + Props[i][0]);
             lines.Add("prop_value_" + i + "=" + (Props[i].Length > 1 ? Props[i][1] : ""));
@@ -359,20 +376,413 @@ public static class Nav {
 }
 
 // ════════════════════════════════════════════════════════════
+// Запись в obsiclipcapture.log из C#: путь к логу задаёт PowerShell
+// ════════════════════════════════════════════════════════════
+public static class Diag {
+    public static string LogPath;
+
+    public static void Write(string msg) {
+        try {
+            if (string.IsNullOrEmpty(LogPath)) return;
+            string stamp = DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss", CultureInfo.InvariantCulture);
+            File.AppendAllText(LogPath, "[" + stamp + "] " + msg + "\r\n", Encoding.UTF8);
+        } catch {}
+    }
+}
+
+// ════════════════════════════════════════════════════════════
+// Передний план и клавиатурный фокус для окон, которые открывает хоткей.
+// Windows не отдаёт передний план процессу, который не получал ввода,
+// поэтому приёмы идут от мягкого к грубому.
+// ════════════════════════════════════════════════════════════
+public static class WinFocus {
+    [DllImport("user32.dll")] static extern IntPtr GetForegroundWindow();
+    [DllImport("user32.dll")] static extern uint   GetWindowThreadProcessId(IntPtr hWnd, out uint pid);
+    [DllImport("user32.dll")] static extern bool   AttachThreadInput(uint idAttach, uint idAttachTo, bool fAttach);
+    [DllImport("user32.dll")] static extern bool   BringWindowToTop(IntPtr hWnd);
+    [DllImport("user32.dll")] static extern bool   SetForegroundWindow(IntPtr hWnd);
+    [DllImport("user32.dll")] static extern void   SwitchToThisWindow(IntPtr hWnd, bool fAltTab);
+    [DllImport("user32.dll")] static extern bool   ShowWindow(IntPtr hWnd, int nCmdShow);
+    [DllImport("user32.dll")] static extern bool   IsIconic(IntPtr hWnd);
+    [DllImport("user32.dll", CharSet = CharSet.Auto)]
+    static extern int GetWindowText(IntPtr hWnd, StringBuilder s, int n);
+    [DllImport("user32.dll")]
+    static extern void keybd_event(byte bVk, byte bScan, uint dwFlags, UIntPtr dwExtraInfo);
+    [DllImport("kernel32.dll")] static extern uint GetCurrentThreadId();
+
+    const int  SW_MINIMIZE      = 6;
+    const int  SW_RESTORE       = 9;
+    const uint KEYEVENTF_KEYUP  = 0x0002;
+    const byte VK_MENU          = 0x12;
+
+    public static bool IsForeground(Form f) {
+        try { return f.IsHandleCreated && GetForegroundWindow() == f.Handle; }
+        catch { return false; }
+    }
+
+    // level — сколько захватов подряд уже не удалось: 0 — привязка к потоку
+    // переднего окна, 1 — плюс одиночное нажатие Alt, 2 — плюс SwitchToThisWindow,
+    // 3 — плюс свернуть и развернуть окно.
+    public static void Grab(Form f, int level) {
+        IntPtr h = f.Handle;
+        uint me = GetCurrentThreadId();
+        uint fgThread = 0;
+        bool attached = false;
+        try {
+            if (IsIconic(h)) ShowWindow(h, SW_RESTORE);
+            IntPtr fg = GetForegroundWindow();
+            uint pid;
+            if (fg != IntPtr.Zero) fgThread = GetWindowThreadProcessId(fg, out pid);
+            if (fgThread != 0 && fgThread != me) attached = AttachThreadInput(me, fgThread, true);
+            if (level >= 1) {
+                keybd_event(VK_MENU, 0, 0, UIntPtr.Zero);
+                keybd_event(VK_MENU, 0, KEYEVENTF_KEYUP, UIntPtr.Zero);
+            }
+            if (level >= 3) { ShowWindow(h, SW_MINIMIZE); ShowWindow(h, SW_RESTORE); }
+            if (level >= 2) SwitchToThisWindow(h, true);
+            BringWindowToTop(h);
+            SetForegroundWindow(h);
+        } catch {}
+        finally {
+            if (attached) { try { AttachThreadInput(me, fgThread, false); } catch {} }
+        }
+    }
+
+    // Для лога: что на самом деле стоит на переднем плане
+    public static string ForegroundInfo() {
+        try {
+            IntPtr fg = GetForegroundWindow();
+            if (fg == IntPtr.Zero) return "нет окна";
+            uint pid;
+            GetWindowThreadProcessId(fg, out pid);
+            string pn = "";
+            try { pn = Process.GetProcessById((int)pid).ProcessName; } catch {}
+            StringBuilder sb = new StringBuilder(256);
+            GetWindowText(fg, sb, 256);
+            return pn + " «" + sb.ToString() + "»";
+        } catch { return "?"; }
+    }
+}
+
+// Серия попыток отдать окну фокус: сразу, затем каждые 90 мс, пока окно не станет
+// передним и поле ввода не получит курсор. Правый Alt в первый момент ещё зажат,
+// поэтому нужен минимум второй проход. Итог пишется в лог.
+public class FocusSeeker {
+    const int MaxTries = 8;
+    Form    form;
+    Control target;
+    string  tag;
+    Timer   timer;
+    int     tries, failed;
+
+    public static void Run(Form f, Control c, string tag) {
+        FocusSeeker s = new FocusSeeker();
+        s.form = f; s.target = c; s.tag = tag;
+        s.timer = new Timer { Interval = 90 };
+        s.timer.Tick += delegate { s.Step(); };
+        s.Step();
+        if (s.timer != null) s.timer.Start();
+    }
+
+    void Step() {
+        if (form == null || form.IsDisposed || !form.IsHandleCreated) { Finish(false, false); return; }
+        bool fg = WinFocus.IsForeground(form);
+        if (!fg) {
+            WinFocus.Grab(form, failed);
+            fg = WinFocus.IsForeground(form);
+            if (!fg) failed++;
+        }
+        bool focused = false;
+        if (fg) {
+            try {
+                if (target != null && !target.Focused) { form.ActiveControl = target; target.Focus(); }
+                focused = (target == null) || target.Focused;
+            } catch {}
+        }
+        tries++;
+        if ((focused && tries >= 2) || tries >= MaxTries) Finish(focused, true);
+    }
+
+    void Finish(bool ok, bool log) {
+        if (timer != null) { timer.Stop(); timer.Dispose(); timer = null; }
+        if (!log) return;
+        string msg = tag + ": фокус " + (ok ? "получен" : "НЕ получен")
+                   + ", шагов " + tries + ", неудачных захватов " + failed;
+        if (!ok) msg += "; передний план: " + WinFocus.ForegroundInfo();
+        Diag.Write(msg);
+    }
+}
+
+// ════════════════════════════════════════════════════════════
+// Память клипа: какие заметки собирают вырезки с какого сайта и какие
+// папки адреса в них уже подтверждены. Файл obsiclipcapture.memory лежит
+// рядом со скриптом, по строке на заметку:
+//   заметка | сайт | создана | папка ; папка
+// Старые строки и строки заметок, которых больше нет, стираются сами.
+// ════════════════════════════════════════════════════════════
+public static class ClipMemory {
+    public const string FileName = "obsiclipcapture.memory";
+    const int    MaxRecords = 300;
+    const string FieldSep   = " | ";
+    const string FolderSep  = " ; ";
+    const string TimeFmt    = "yyyy-MM-dd HH:mm:ss";
+
+    // «В новую заметку» по сайту: вопросы молчат до конца окна времени или до перезапуска
+    static readonly Dictionary<string, DateTime> muted =
+        new Dictionary<string, DateTime>(StringComparer.OrdinalIgnoreCase);
+
+    public class Rec {
+        public string Rel;
+        public string Host;
+        public DateTime Created;
+        public List<string> Folders = new List<string>();
+
+        public bool HasFolder(string f) {
+            foreach (string x in Folders)
+                if (string.Equals(x, f, StringComparison.OrdinalIgnoreCase)) return true;
+            return false;
+        }
+    }
+
+    // Адрес → сайт и папка. Папка — путь без последнего куска:
+    // /a/b/c.htm → /a/b/, /a/b/ → /a/b/. Только http и https.
+    public static bool ParseUrl(string source, out string host, out string folder) {
+        host = null; folder = null;
+        Uri u;
+        string s = (source ?? "").Trim();
+        if (!Uri.TryCreate(s, UriKind.Absolute, out u)) return false;
+        if (u.Scheme != Uri.UriSchemeHttp && u.Scheme != Uri.UriSchemeHttps) return false;
+        string h = u.Host.ToLowerInvariant();
+        if (h.StartsWith("www.")) h = h.Substring(4);
+        if (h.Length == 0) return false;
+        string p = u.AbsolutePath;
+        if (string.IsNullOrEmpty(p)) p = "/";
+        string f = p.Substring(0, p.LastIndexOf('/') + 1);
+        if (f.Length == 0) f = "/";
+        host = h; folder = f;
+        return true;
+    }
+
+    public static string Pretty(string s) {
+        try { return Uri.UnescapeDataString(s ?? ""); } catch { return s ?? ""; }
+    }
+
+    public static string FilePath(AppSettings st) {
+        string dir = Path.GetDirectoryName(st.SettingsPath ?? "");
+        return string.IsNullOrEmpty(dir) ? FileName : Path.Combine(dir, FileName);
+    }
+
+    public static string FullPath(AppSettings st, Rec r) {
+        return Path.Combine(st.VaultPath ?? "", r.Rel);
+    }
+
+    static List<Rec> Read(AppSettings st) {
+        var list = new List<Rec>();
+        string path = FilePath(st);
+        if (!File.Exists(path)) return list;
+        try {
+            foreach (string raw in File.ReadAllLines(path, Encoding.UTF8)) {
+                string line = raw.Trim();
+                if (line.Length == 0 || line[0] == '#') continue;
+                string[] p = line.Split(new string[] { FieldSep }, StringSplitOptions.None);
+                if (p.Length < 3) continue;
+                DateTime t;
+                if (!DateTime.TryParseExact(p[2].Trim(), TimeFmt, CultureInfo.InvariantCulture,
+                                            DateTimeStyles.None, out t)) continue;
+                Rec r = new Rec();
+                r.Rel     = p[0].Trim();
+                r.Host    = p[1].Trim().ToLowerInvariant();
+                r.Created = t;
+                if (r.Rel.Length == 0 || r.Host.Length == 0) continue;
+                if (p.Length > 3)
+                    foreach (string f in p[3].Split(new string[] { FolderSep }, StringSplitOptions.RemoveEmptyEntries))
+                        if (f.Trim().Length > 0) r.Folders.Add(f.Trim());
+                list.Add(r);
+            }
+        } catch {}
+        return list;
+    }
+
+    static void Write(AppSettings st, List<Rec> list) {
+        var lines = new List<string>();
+        lines.Add("# Память клипа: заметка | сайт | создана | подтверждённые папки. Файл ведёт утилита, править руками не нужно.");
+        foreach (Rec r in list) {
+            string s = r.Rel + FieldSep + r.Host + FieldSep + r.Created.ToString(TimeFmt, CultureInfo.InvariantCulture);
+            if (r.Folders.Count > 0) s += FieldSep + string.Join(FolderSep, r.Folders.ToArray());
+            lines.Add(s);
+        }
+        File.WriteAllLines(FilePath(st), lines.ToArray(), new UTF8Encoding(false));
+    }
+
+    // Оставить записи моложе окна времени, чьи заметки ещё лежат на месте
+    static List<Rec> Alive(AppSettings st, List<Rec> list) {
+        var res = new List<Rec>();
+        DateTime now = DateTime.Now;
+        int hours = st.ClipSameNoteHours;
+        foreach (Rec r in list) {
+            if (hours > 0 && now - r.Created > TimeSpan.FromHours(hours)) continue;
+            bool exists = false;
+            try { exists = File.Exists(FullPath(st, r)); } catch {}
+            if (exists) res.Add(r);
+        }
+        if (res.Count > MaxRecords) res.RemoveRange(0, res.Count - MaxRecords);
+        return res;
+    }
+
+    // При запуске: стереть устаревшее
+    public static void Purge(AppSettings st) {
+        try {
+            List<Rec> all  = Read(st);
+            List<Rec> keep = Alive(st, all);
+            if (keep.Count != all.Count) Write(st, keep);
+        } catch {}
+    }
+
+    // Самая свежая живая заметка этого сайта
+    public static Rec FindForHost(AppSettings st, string host) {
+        Rec best = null;
+        try {
+            foreach (Rec r in Alive(st, Read(st)))
+                if (string.Equals(r.Host, host, StringComparison.OrdinalIgnoreCase)
+                    && (best == null || r.Created >= best.Created)) best = r;
+        } catch {}
+        return best;
+    }
+
+    // Новая заметка сайта; подтверждённых папок у неё пока нет
+    public static void Register(AppSettings st, string rel, string host, DateTime created) {
+        try {
+            rel = rel.Replace('/', '\\');
+            List<Rec> list = Alive(st, Read(st));
+            list.RemoveAll(delegate(Rec x) { return string.Equals(x.Rel, rel, StringComparison.OrdinalIgnoreCase); });
+            Rec r = new Rec();
+            r.Rel = rel; r.Host = host; r.Created = created;
+            list.Add(r);
+            Write(st, list);
+        } catch {}
+    }
+
+    // «В ту же заметку»: папка подтверждена, дальше молча
+    public static void Confirm(AppSettings st, string rel, string folder) {
+        try {
+            List<Rec> list = Alive(st, Read(st));
+            foreach (Rec r in list) {
+                if (string.Equals(r.Rel, rel, StringComparison.OrdinalIgnoreCase)) {
+                    if (!r.HasFolder(folder)) r.Folders.Add(folder);
+                    break;
+                }
+            }
+            Write(st, list);
+        } catch {}
+    }
+
+    public static bool IsMuted(string host, int hours) {
+        DateTime t;
+        if (!muted.TryGetValue(host, out t)) return false;
+        if (hours > 0 && DateTime.Now - t > TimeSpan.FromHours(hours)) { muted.Remove(host); return false; }
+        return true;
+    }
+
+    public static void Mute(string host) {
+        muted[host] = DateTime.Now;
+    }
+}
+
+// ════════════════════════════════════════════════════════════
+// Окно выбора: вырезка с известного сайта, но из другой папки адреса
+// ════════════════════════════════════════════════════════════
+public class SameNoteForm : Form {
+    public const int AnsCancel = 0, AnsSame = 1, AnsNew = 2;
+    public int Answer = AnsCancel;
+
+    Button btnSame, btnNew;
+    Font   boldFont;
+
+    public SameNoteForm(string host, string noteName, string pageFolder, string known, int hours) {
+        Text            = "Вырезка с сайта " + host;
+        FormBorderStyle = FormBorderStyle.FixedDialog;
+        StartPosition   = FormStartPosition.CenterScreen;
+        MaximizeBox     = false;
+        MinimizeBox     = false;
+        ShowInTaskbar   = false;
+        TopMost         = true;
+        KeyPreview      = true;
+        boldFont        = new Font(Font, FontStyle.Bold);
+
+        int lx = 14, w = 460, y = 14;
+        y = AddText("Этот сайт уже есть в заметке, но вырезка взята из другой папки адреса.", lx, y, w, boldFont, false) + 6;
+        y = AddText("Заметка: " + noteName, lx, y, w, null, false);
+        y = AddText("Папка этой страницы: " + pageFolder, lx, y, w, null, false);
+        y = AddText("Уже подтверждены в заметке:\r\n" + known, lx, y, w, null, false) + 8;
+
+        btnSame = new Button { Text = "В ту же заметку", Location = new Point(lx, y),       Size = new Size(200, 32) };
+        btnNew  = new Button { Text = "В новую заметку", Location = new Point(lx + 212, y), Size = new Size(200, 32) };
+        btnSame.Click += delegate { Answer = AnsSame; DialogResult = DialogResult.OK; };
+        btnNew.Click  += delegate { Answer = AnsNew;  DialogResult = DialogResult.OK; };
+        Controls.Add(btnSame);
+        Controls.Add(btnNew);
+        AcceptButton = btnSame;
+        y += 32 + 12;
+
+        string until = (hours > 0)
+            ? "на " + hours + " ч или до перезапуска утилиты"
+            : "до перезапуска утилиты";
+        y = AddText("«В новую заметку» отключает вопросы по этому сайту " + until +
+                    ". Esc — отмена, вырезка не сохранится.", lx, y, w, null, true);
+
+        ClientSize = new Size(w + 2 * lx, y + 10);
+        KeyDown += OnKey;
+    }
+
+    int AddText(string text, int x, int y, int w, Font font, bool gray) {
+        Font f = (font != null) ? font : Font;
+        Size sz = TextRenderer.MeasureText(text, f, new Size(w, 0),
+                      TextFormatFlags.WordBreak | TextFormatFlags.NoPadding);
+        Label lb = new Label();
+        lb.Text        = text;
+        lb.Font        = f;
+        lb.UseMnemonic = false;
+        lb.AutoSize    = false;
+        lb.Location    = new Point(x, y);
+        lb.Size        = new Size(w, sz.Height + 2);
+        if (gray) lb.ForeColor = SystemColors.GrayText;
+        Controls.Add(lb);
+        return y + sz.Height + 4;
+    }
+
+    void OnKey(object sender, KeyEventArgs e) {
+        if (e.KeyCode == Keys.Escape) {
+            Answer = AnsCancel;
+            DialogResult = DialogResult.Cancel;
+        }
+    }
+
+    protected override void OnShown(EventArgs e) {
+        base.OnShown(e);
+        FocusSeeker.Run(this, btnSame, "Окно выбора");
+    }
+
+    protected override void Dispose(bool disposing) {
+        base.Dispose(disposing);
+        if (disposing && boldFont != null) { boldFont.Dispose(); boldFont = null; }
+    }
+}
+
+// ════════════════════════════════════════════════════════════
 // Окно настроек клипа
 // ════════════════════════════════════════════════════════════
 public class SettingsForm : Form {
     public AppSettings Result;
     TextBox txVault, txInbox, txAttach, txDateProp, txDate, txTmpl;
     DataGridView dgvProps;
-    CheckBox ckCtrl, ckAlt, ckShift;
+    CheckBox ckCtrl, ckAlt, ckShift, ckSame;
     ComboBox cbKey;
 
     public SettingsForm(AppSettings s) {
         Text = "Настройки клиппера";
         FormBorderStyle = FormBorderStyle.FixedDialog;
         StartPosition   = FormStartPosition.CenterScreen;
-        ClientSize      = new Size(488, 592);
+        ClientSize      = new Size(488, 620);
         MaximizeBox = false; MinimizeBox = false;
         TopMost = true;
 
@@ -401,6 +811,10 @@ public class SettingsForm : Form {
         AddL("Шаблон Templater (оставьте пустым, если не нужен):", lx, y, rw); y += 20;
         txTmpl = AddT(s.TemplaterCmd ?? "", lx, y, rw);
         AddLG("напр.: templater-obsidian:Folder/Template.md", lx, y + 26, rw); y += 52;
+
+        ckSame = new CheckBox { Text = "Вырезки с одной страницы — в одну заметку",
+                     Location = new Point(lx, y), AutoSize = true, Checked = s.ClipSameNote };
+        Controls.Add(ckSame); y += 28;
 
         var grp = new GroupBox { Text = "Горячая клавиша клиппера", Location = new Point(lx, y), Size = new Size(rw, 64) };
         ckCtrl  = new CheckBox { Text = "Ctrl",  Location = new Point(10,  28), AutoSize = true, Checked = s.HotkeyCtrl  };
@@ -438,6 +852,7 @@ public class SettingsForm : Form {
             Result.HotkeyAlt    = ckAlt.Checked;
             Result.HotkeyShift  = ckShift.Checked;
             Result.HotkeyVk     = (cbKey.SelectedIndex >= 0) ? AppSettings.KEY_VKS[cbKey.SelectedIndex] : 0x77u;
+            Result.ClipSameNote = ckSame.Checked;
             Result.Props        = ReadGrid(dgvProps);
             DialogResult = DialogResult.OK;
         };
@@ -451,6 +866,8 @@ public class SettingsForm : Form {
         r.TemplaterCmd = s.TemplaterCmd; r.Props = new List<string[]>(s.Props);
         r.HotkeyCtrl = s.HotkeyCtrl; r.HotkeyAlt = s.HotkeyAlt;
         r.HotkeyShift = s.HotkeyShift; r.HotkeyVk = s.HotkeyVk;
+        r.ClipSameNote = s.ClipSameNote; r.ClipSeparator = s.ClipSeparator;
+        r.ClipSameNoteHours = s.ClipSameNoteHours;
         r.CapFolder = s.CapFolder; r.CapFileName = s.CapFileName;
         r.CapHeader = s.CapHeader;
         r.NavSource = s.NavSource; r.NavTarget = s.NavTarget;
@@ -686,10 +1103,18 @@ public class NotePopup : Form {
 // ════════════════════════════════════════════════════════════
 public class CaptureForm : Form {
 
-    [DllImport("user32.dll")] static extern bool SetForegroundWindow(IntPtr hWnd);
     [StructLayout(LayoutKind.Sequential)]
     struct FLASHWINFO { public uint cbSize; public IntPtr hwnd; public uint dwFlags; public uint uCount; public uint dwTimeout; }
     [DllImport("user32.dll")] static extern bool FlashWindowEx(ref FLASHWINFO pwfi);
+    [DllImport("kernel32.dll")] static extern IntPtr GlobalLock(IntPtr hMem);
+    [DllImport("kernel32.dll")] static extern bool GlobalUnlock(IntPtr hMem);
+    [DllImport("kernel32.dll")] static extern UIntPtr GlobalSize(IntPtr hMem);
+    [DllImport("ole32.dll")] static extern void ReleaseStgMedium(ref System.Runtime.InteropServices.ComTypes.STGMEDIUM pmedium);
+
+    const int WM_SYSCOMMAND = 0x0112;
+    const int SC_KEYMENU    = 0xF100;
+
+    static readonly string[] IMAGE_EXTS = { ".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp", ".svg" };
 
     public static string Draft = "";
 
@@ -697,19 +1122,30 @@ public class CaptureForm : Form {
     TextBox box;
     bool saved;
     public string SavedPath;
+    Panel   bar;
+    Button  btnSave, btnCancel;
+    Label   lbHint;
+    ToolTip tips;
+    Font    barFont;
 
     public CaptureForm(AppSettings s) {
         st = s;
 
-        Color bg, fg, bx;
+        Color bg, fg, bx, hint, edge, accent;
         if (st.CapTheme == "dark") {
             bg = Color.FromArgb(30, 30, 32);
             fg = Color.FromArgb(224, 224, 224);
             bx = Color.FromArgb(38, 38, 41);
+            hint   = Color.FromArgb(140, 140, 145);
+            edge   = Color.FromArgb(70, 70, 74);
+            accent = Color.FromArgb(139, 108, 239);
         } else {
             bg = Color.FromArgb(250, 250, 248);
             fg = Color.FromArgb(26, 26, 26);
             bx = Color.White;
+            hint   = Color.FromArgb(130, 130, 125);
+            edge   = Color.FromArgb(210, 210, 205);
+            accent = Color.FromArgb(120, 82, 238);
         }
 
         Text            = "Заметка";
@@ -740,6 +1176,10 @@ public class CaptureForm : Form {
         box.Text = Draft;
         box.SelectionStart = box.TextLength;
         box.KeyDown += OnBoxKey;
+        box.AllowDrop  = true;
+        box.DragEnter += OnBoxDragOver;
+        box.DragOver  += OnBoxDragOver;
+        box.DragDrop  += OnBoxDragDrop;
 
         var pad = new Panel();
         pad.Dock      = DockStyle.Fill;
@@ -747,23 +1187,503 @@ public class CaptureForm : Form {
         pad.BackColor = bx;
         pad.Controls.Add(box);
         Controls.Add(pad);
+
+        // ── нижняя панель: подсказка слева, кнопки справа ──
+        barFont   = new Font("Segoe UI", 9f);
+        btnSave   = MakeBarButton("Сохранить · Ctrl+Enter", accent, Color.White, Color.Empty, 0);
+        btnCancel = MakeBarButton("Отмена · Esc", bg, fg, edge, 1);
+        btnSave.Click   += delegate { DoSave(); };
+        btnCancel.Click += delegate { DoCancel(); };
+        tips = new ToolTip();
+        tips.SetToolTip(btnCancel, "Окно закроется, текст останется черновиком");
+        tips.SetToolTip(btnSave,   "Записать в заметку и закрыть");
+
+        string hk = st.GetCapHotkeyDisplay();
+        lbHint = new Label();
+        lbHint.Text         = (hk == "\u2014") ? "" : "Вызов окна: " + hk;
+        lbHint.Font         = barFont;
+        lbHint.ForeColor    = hint;
+        lbHint.BackColor    = bg;
+        lbHint.AutoSize     = false;
+        lbHint.AutoEllipsis = true;
+        lbHint.TextAlign    = ContentAlignment.MiddleLeft;
+
+        bar = new Panel();
+        bar.Dock      = DockStyle.Bottom;
+        bar.BackColor = bg;
+        bar.Height    = Math.Max(42, btnSave.Height + 14);
+        bar.Controls.Add(lbHint);
+        bar.Controls.Add(btnSave);
+        bar.Controls.Add(btnCancel);
+        bar.Resize += delegate { LayoutBar(); };
+        Controls.Add(bar);
+        pad.BringToFront();      // Fill докуется последним и не перекрывает панель
+        LayoutBar();
+
+        int minW = Math.Max(300, btnSave.Width + btnCancel.Width + 8 + 20 + 80);
+        MinimumSize = SizeFromClientSize(new Size(minW, bar.Height + 60));
+    }
+
+    Button MakeBarButton(string text, Color back, Color fore, Color border, int borderW) {
+        var b = new Button();
+        b.Text      = text;
+        b.Font      = barFont;
+        b.FlatStyle = FlatStyle.Flat;
+        b.TabStop   = false;
+        b.UseVisualStyleBackColor = false;
+        b.BackColor = back;
+        b.ForeColor = fore;
+        b.FlatAppearance.BorderSize = borderW;
+        if (borderW > 0) b.FlatAppearance.BorderColor = border;
+        Size ts = TextRenderer.MeasureText(text, barFont);
+        b.Size = new Size(ts.Width + 24, Math.Max(28, ts.Height + 10));
+        return b;
+    }
+
+    void LayoutBar() {
+        int m = 10, gap = 8;
+        int w = bar.ClientSize.Width, h = bar.ClientSize.Height;
+        int top = (h - btnSave.Height) / 2;
+        btnCancel.Location = new Point(w - m - btnCancel.Width, top);
+        btnSave.Location   = new Point(btnCancel.Left - gap - btnSave.Width, top);
+        lbHint.Location    = new Point(m, 0);
+        lbHint.Size        = new Size(Math.Max(0, btnSave.Left - gap - m), h);
+    }
+
+    // Отдать окну передний план и курсор в поле ввода, даже если хоткей поймал
+    // не наш процесс. Серия попыток с нарастающей грубостью, итог пишется в лог.
+    public void ForceFocus() {
+        if (IsDisposed || !IsHandleCreated) return;
+        FocusSeeker.Run(this, box, "Окно заметки");
+    }
+
+    // Отпущенный Alt шлёт WM_SYSKEYUP, и окно уходит в режим системного меню,
+    // съедая следующие нажатия. Клавиатурный SC_KEYMENU без символа глушим.
+    protected override void WndProc(ref Message m) {
+        if (m.Msg == WM_SYSCOMMAND &&
+            ((m.WParam.ToInt64() & 0xFFF0) == SC_KEYMENU) && m.LParam == IntPtr.Zero)
+            return;
+        base.WndProc(ref m);
+    }
+
+    protected override void Dispose(bool disposing) {
+        base.Dispose(disposing);
+        if (disposing) {
+            if (tips != null)    { tips.Dispose();    tips = null; }
+            if (barFont != null) { barFont.Dispose(); barFont = null; }
+        }
     }
 
     void OnBoxKey(object sender, KeyEventArgs e) {
         // Ctrl+Enter — сохранить и закрыть
         if (e.KeyCode == Keys.Enter && e.Control && !e.Shift && !e.Alt) {
             e.SuppressKeyPress = true;
-            if (box.Text.Trim().Length > 0) { SaveNote(); }
-            Draft = "";
-            saved = true;
-            Close();
+            DoSave();
             return;
         }
         // Escape — закрыть, текст остаётся черновиком
         if (e.KeyCode == Keys.Escape) {
             e.SuppressKeyPress = true;
-            Close();
+            DoCancel();
         }
+    }
+
+    void DoSave() {
+        if (box.Text.Trim().Length > 0) { SaveNote(); }
+        Draft = "";
+        saved = true;
+        Close();
+    }
+
+    void DoCancel() {
+        Close();
+    }
+
+    // ════════ Перетаскивание в окно заметки ════════
+    static bool HasDropData(IDataObject d) {
+        try {
+            string[] fmts = { DataFormats.FileDrop, "FileGroupDescriptorW", "HTML Format",
+                              "UniformResourceLocatorW", "UniformResourceLocator",
+                              DataFormats.Bitmap, DataFormats.UnicodeText, DataFormats.Text };
+            foreach (string f in fmts) if (d.GetDataPresent(f)) return true;
+        } catch {}
+        return false;
+    }
+
+    void OnBoxDragOver(object sender, DragEventArgs e) {
+        if (!HasDropData(e.Data))                               e.Effect = DragDropEffects.None;
+        else if ((e.AllowedEffect & DragDropEffects.Copy) != 0) e.Effect = DragDropEffects.Copy;
+        else if ((e.AllowedEffect & DragDropEffects.Link) != 0) e.Effect = DragDropEffects.Link;
+        else                                                    e.Effect = DragDropEffects.None;
+    }
+
+    void OnBoxDragDrop(object sender, DragEventArgs e) {
+        string ins = null;
+        bool block = false;
+        try { ins = BuildDropText(e.Data, out block); } catch { ins = null; block = false; }
+        if (string.IsNullOrEmpty(ins)) { ins = DropPlainText(e.Data); block = false; }
+        if (string.IsNullOrEmpty(ins)) return;
+        try { InsertAt(DropIndex(e.X, e.Y), ins, block); } catch {}
+        try { BeginInvoke(new Action(ForceFocus)); } catch {}
+    }
+
+    static string DropPlainText(IDataObject d) {
+        try {
+            string t = d.GetData(DataFormats.UnicodeText) as string;
+            if (string.IsNullOrEmpty(t)) t = d.GetData(DataFormats.Text) as string;
+            return t;
+        } catch { return null; }
+    }
+
+    int DropIndex(int sx, int sy) {
+        int len = box.TextLength;
+        if (len == 0) return 0;
+        Point p = box.PointToClient(new Point(sx, sy));
+        int idx = box.GetCharIndexFromPosition(p);
+        if (idx < 0 || idx >= len) return len;
+        if (idx == len - 1) {
+            // правее или ниже последнего символа — в конец
+            Point last = box.GetPositionFromCharIndex(len - 1);
+            if (p.Y >= last.Y + box.Font.Height) return len;
+            if (p.Y >= last.Y && p.X > last.X) return len;
+        }
+        return idx;
+    }
+
+    void InsertAt(int pos, string ins, bool block) {
+        ins = ins.Replace("\r\n", "\n").Replace("\r", "\n").Replace("\n", "\r\n");
+        string t = box.Text;
+        if (pos < 0 || pos > t.Length) pos = t.Length;
+        if (pos > 0 && pos < t.Length && t[pos - 1] == '\r' && t[pos] == '\n') pos++;
+        if (block) {
+            if (pos > 0 && t[pos - 1] != '\n') ins = "\r\n" + ins;
+            if (pos < t.Length && t[pos] != '\r' && t[pos] != '\n') ins = ins + "\r\n";
+        }
+        box.SelectionStart  = pos;
+        box.SelectionLength = 0;
+        box.SelectedText    = ins;
+    }
+
+    string BuildDropText(IDataObject d, out bool block) {
+        block = false;
+
+        // 1. Файлы из проводника
+        if (d.GetDataPresent(DataFormats.FileDrop)) {
+            string[] files = d.GetData(DataFormats.FileDrop) as string[];
+            if (files != null && files.Length > 0) {
+                var parts = new List<string>();
+                foreach (string f in files) {
+                    string part = f;
+                    if (IsImageName(f) && File.Exists(f)) {
+                        try {
+                            string name = AttachName(Path.GetFileName(f), Path.GetExtension(f));
+                            File.Copy(f, Path.Combine(AttachDir(), name));
+                            part = EmbedFor(name);
+                            block = true;
+                        } catch { part = f; }
+                    }
+                    parts.Add(part);
+                }
+                return string.Join("\n", parts.ToArray());
+            }
+        }
+
+        // 2. Виртуальный файл: картинка, утащенная из браузера
+        if (d.GetDataPresent("FileGroupDescriptorW") && d.GetDataPresent("FileContents")) {
+            try {
+                string vname = VirtualFileName(d);
+                if (vname != null && IsImageName(vname)) {
+                    byte[] data = VirtualFileContents(d);
+                    if (data != null && data.Length > 0) {
+                        string name = AttachName(vname, Path.GetExtension(vname));
+                        File.WriteAllBytes(Path.Combine(AttachDir(), name), data);
+                        block = true;
+                        return EmbedFor(name);
+                    }
+                }
+            } catch {}
+        }
+
+        string frag = null;
+        if (d.GetDataPresent("HTML Format")) {
+            try { frag = HtmlFragment(GetHtml(d)); } catch { frag = null; }
+        }
+
+        // 3. HTML, в котором только картинка
+        if (frag != null) {
+            string src = SingleImageSrc(frag);
+            if (!string.IsNullOrEmpty(src)) {
+                string r = ImageFromSrc(src);
+                if (r != null) { block = true; return r; }
+            }
+        }
+
+        // 4. Ссылка
+        if (d.GetDataPresent("UniformResourceLocatorW") || d.GetDataPresent("UniformResourceLocator")) {
+            string url = ReadUrl(d);
+            if (!string.IsNullOrEmpty(url)) {
+                string title = (frag != null) ? LinkTitle(frag) : null;
+                if (!string.IsNullOrEmpty(title) && title != url)
+                    return "[" + title.Replace("[", "\\[").Replace("]", "\\]") + "](" + url + ")";
+                return url;
+            }
+        }
+
+        // 5. Картинка из буфера-объекта
+        if (d.GetDataPresent(DataFormats.Bitmap)) {
+            Image img = d.GetData(DataFormats.Bitmap) as Image;
+            if (img != null) {
+                string name = AttachName(null, ".png");
+                img.Save(Path.Combine(AttachDir(), name), ImageFormat.Png);
+                block = true;
+                return EmbedFor(name);
+            }
+        }
+
+        // 6. Текст
+        return DropPlainText(d);
+    }
+
+    static bool IsImageName(string f) {
+        string ext = (Path.GetExtension(f ?? "") ?? "").ToLowerInvariant();
+        return Array.IndexOf(IMAGE_EXTS, ext) >= 0;
+    }
+
+    string AttachDir() {
+        string dir = Path.Combine(st.VaultPath, st.Attachments ?? "Attachments");
+        if (!Directory.Exists(dir)) Directory.CreateDirectory(dir);
+        return dir;
+    }
+
+    string EmbedFor(string fileName) {
+        return "![[" + (st.Attachments ?? "Attachments").Replace('\\', '/') + "/" + fileName + "]]";
+    }
+
+    // Исходное имя, если оно свободно, иначе drop-ДАТА; существующие файлы не трогаем
+    string AttachName(string preferred, string ext) {
+        string dir = AttachDir();
+        if (!string.IsNullOrEmpty(preferred)) {
+            string n = preferred;
+            foreach (char c in Path.GetInvalidFileNameChars()) n = n.Replace(c.ToString(), "");
+            foreach (char c in "[]|#^") n = n.Replace(c.ToString(), "");
+            n = n.Trim();
+            if (n.Length > 0 && Path.GetExtension(n).Length == 0) n += ext;
+            if (n.Length > 0 && n != ext && !File.Exists(Path.Combine(dir, n))) return n;
+        }
+        string stamp = "drop-" + DateTime.Now.ToString("yyyy-MM-dd_HH-mm-ss-fff");
+        string name = stamp + ext;
+        int i = 2;
+        while (File.Exists(Path.Combine(dir, name))) name = stamp + "-" + (i++) + ext;
+        return name;
+    }
+
+    static byte[] StreamBytes(object o) {
+        MemoryStream ms = o as MemoryStream;
+        if (ms != null) return ms.ToArray();
+        Stream s = o as Stream;
+        if (s == null) return null;
+        var outMs = new MemoryStream();
+        s.CopyTo(outMs);
+        return outMs.ToArray();
+    }
+
+    // FILEGROUPDESCRIPTORW: UINT cItems, затем FILEDESCRIPTORW по 592 байта, cFileName со смещения 72
+    static string VirtualFileName(IDataObject d) {
+        byte[] b = StreamBytes(d.GetData("FileGroupDescriptorW"));
+        if (b == null || b.Length < 4 + 592) return null;
+        if (BitConverter.ToUInt32(b, 0) < 1) return null;
+        string n = Encoding.Unicode.GetString(b, 4 + 72, 520);
+        int z = n.IndexOf('\0');
+        if (z >= 0) n = n.Substring(0, z);
+        n = n.Trim();
+        return n.Length > 0 ? n : null;
+    }
+
+    // FileContents первого файла. WinForms спрашивает с lindex = -1, а браузеры
+    // отдают содержимое только с lindex = 0 — тогда идём через COM напрямую.
+    static byte[] VirtualFileContents(IDataObject d) {
+        try {
+            byte[] b = StreamBytes(d.GetData("FileContents"));
+            if (b != null && b.Length > 0) return b;
+        } catch {}
+        var com = d as System.Runtime.InteropServices.ComTypes.IDataObject;
+        if (com == null) return null;
+        var fe = new System.Runtime.InteropServices.ComTypes.FORMATETC();
+        fe.cfFormat = (short)DataFormats.GetFormat("FileContents").Id;
+        fe.dwAspect = System.Runtime.InteropServices.ComTypes.DVASPECT.DVASPECT_CONTENT;
+        fe.lindex   = 0;
+        fe.ptd      = IntPtr.Zero;
+        fe.tymed    = System.Runtime.InteropServices.ComTypes.TYMED.TYMED_HGLOBAL
+                    | System.Runtime.InteropServices.ComTypes.TYMED.TYMED_ISTREAM;
+        System.Runtime.InteropServices.ComTypes.STGMEDIUM md;
+        com.GetData(ref fe, out md);
+        try {
+            if (md.tymed == System.Runtime.InteropServices.ComTypes.TYMED.TYMED_HGLOBAL) {
+                IntPtr p = GlobalLock(md.unionmember);
+                if (p == IntPtr.Zero) return null;
+                try {
+                    int size = (int)GlobalSize(md.unionmember).ToUInt64();
+                    byte[] b = new byte[size];
+                    Marshal.Copy(p, b, 0, size);
+                    return b;
+                } finally { GlobalUnlock(md.unionmember); }
+            }
+            if (md.tymed == System.Runtime.InteropServices.ComTypes.TYMED.TYMED_ISTREAM) {
+                var stm = (System.Runtime.InteropServices.ComTypes.IStream)
+                          Marshal.GetObjectForIUnknown(md.unionmember);
+                var outMs = new MemoryStream();
+                byte[] buf = new byte[65536];
+                IntPtr pRead = Marshal.AllocCoTaskMem(4);
+                try {
+                    try { stm.Seek(0, 0, IntPtr.Zero); } catch {}
+                    while (true) {
+                        stm.Read(buf, buf.Length, pRead);
+                        int r = Marshal.ReadInt32(pRead);
+                        if (r <= 0) break;
+                        outMs.Write(buf, 0, r);
+                    }
+                } finally {
+                    Marshal.FreeCoTaskMem(pRead);
+                    Marshal.ReleaseComObject(stm);
+                }
+                return outMs.ToArray();
+            }
+            return null;
+        } finally { ReleaseStgMedium(ref md); }
+    }
+
+    static string GetHtml(IDataObject d) {
+        object o = d.GetData("HTML Format");
+        string s = o as string;
+        if (s != null) return s;
+        byte[] b = StreamBytes(o);
+        return (b != null) ? Encoding.UTF8.GetString(b).TrimEnd('\0') : null;
+    }
+
+    static string HtmlFragment(string html) {
+        if (html == null) return null;
+        int a = html.IndexOf("<!--StartFragment-->", StringComparison.OrdinalIgnoreCase);
+        int b = html.IndexOf("<!--EndFragment-->",   StringComparison.OrdinalIgnoreCase);
+        if (a >= 0 && b > a) return html.Substring(a + 20, b - a - 20);
+        int c = html.IndexOf('<');
+        return (c >= 0) ? html.Substring(c) : html;
+    }
+
+    static string HtmlToText(string html) {
+        string t = Regex.Replace(html ?? "", @"<!--.*?-->", " ", RegexOptions.Singleline);
+        t = Regex.Replace(t, @"<[^>]*>", " ");
+        t = System.Net.WebUtility.HtmlDecode(t);
+        return Regex.Replace(t, @"\s+", " ").Trim();
+    }
+
+    static string AttrValue(string tag, string attr) {
+        Match m = Regex.Match(tag, @"\b" + attr + @"\s*=\s*(?:""([^""]*)""|'([^']*)'|([^\s>]+))",
+                              RegexOptions.IgnoreCase);
+        if (!m.Success) return null;
+        string v = m.Groups[1].Success ? m.Groups[1].Value
+                 : m.Groups[2].Success ? m.Groups[2].Value : m.Groups[3].Value;
+        return System.Net.WebUtility.HtmlDecode(v).Trim();
+    }
+
+    // Фрагмент — по сути одна <img> (возможно, внутри <a>) без видимого текста
+    static string SingleImageSrc(string frag) {
+        MatchCollection imgs = Regex.Matches(frag, @"<img\b[^>]*>", RegexOptions.IgnoreCase);
+        if (imgs.Count != 1) return null;
+        string rest = Regex.Replace(frag, @"<img\b[^>]*>", " ", RegexOptions.IgnoreCase);
+        if (HtmlToText(rest).Length > 0) return null;
+        return AttrValue(imgs[0].Value, "src");
+    }
+
+    static string LinkTitle(string frag) {
+        Match m = Regex.Match(frag, @"<a\b[^>]*>(.*?)</a\s*>", RegexOptions.IgnoreCase | RegexOptions.Singleline);
+        if (!m.Success) return null;
+        string t = HtmlToText(m.Groups[1].Value);
+        return t.Length > 0 ? t : null;
+    }
+
+    static string ReadUrl(IDataObject d) {
+        string url = null;
+        try {
+            if (d.GetDataPresent("UniformResourceLocatorW")) {
+                byte[] b = StreamBytes(d.GetData("UniformResourceLocatorW"));
+                if (b != null) url = Encoding.Unicode.GetString(b);
+            }
+            if (string.IsNullOrEmpty(url) && d.GetDataPresent("UniformResourceLocator")) {
+                byte[] b = StreamBytes(d.GetData("UniformResourceLocator"));
+                if (b != null) url = Encoding.Default.GetString(b);
+            }
+        } catch {}
+        if (url != null) { int z = url.IndexOf('\0'); if (z >= 0) url = url.Substring(0, z); }
+        if (string.IsNullOrEmpty(url) || url.Trim().Length == 0) url = DropPlainText(d);
+        if (url == null) return null;
+        url = url.Trim();
+        int nl = url.IndexOfAny(new[] { '\r', '\n' });
+        if (nl >= 0) url = url.Substring(0, nl).Trim();
+        return url;
+    }
+
+    static string ExtFromMime(string mime) {
+        mime = (mime ?? "").ToLowerInvariant().Trim();
+        int sc = mime.IndexOf(';');
+        if (sc >= 0) mime = mime.Substring(0, sc).Trim();
+        switch (mime) {
+            case "image/png":     return ".png";
+            case "image/jpeg":
+            case "image/jpg":
+            case "image/pjpeg":   return ".jpg";
+            case "image/gif":     return ".gif";
+            case "image/webp":    return ".webp";
+            case "image/bmp":     return ".bmp";
+            case "image/svg+xml": return ".svg";
+        }
+        return null;
+    }
+
+    // src картинки → файл во вложениях → embed; null — не картинка
+    string ImageFromSrc(string src) {
+        if (src.StartsWith("data:", StringComparison.OrdinalIgnoreCase)) {
+            try {
+                int comma = src.IndexOf(',');
+                if (comma < 0) return null;
+                string meta = src.Substring(5, comma - 5);
+                string payload = src.Substring(comma + 1);
+                string ext = ExtFromMime(meta.Split(';')[0]);
+                if (ext == null) return null;
+                byte[] data = meta.ToLowerInvariant().Contains(";base64")
+                    ? Convert.FromBase64String(Uri.UnescapeDataString(payload).Trim())
+                    : Encoding.UTF8.GetBytes(Uri.UnescapeDataString(payload));
+                string name = AttachName(null, ext);
+                File.WriteAllBytes(Path.Combine(AttachDir(), name), data);
+                return EmbedFor(name);
+            } catch { return null; }
+        }
+        if (src.StartsWith("http://",  StringComparison.OrdinalIgnoreCase) ||
+            src.StartsWith("https://", StringComparison.OrdinalIgnoreCase)) {
+            try {
+                System.Net.ServicePointManager.SecurityProtocol |= (System.Net.SecurityProtocolType)3072;
+                var req = (System.Net.HttpWebRequest)System.Net.WebRequest.Create(src);
+                req.Timeout          = 10000;
+                req.ReadWriteTimeout = 10000;
+                req.UserAgent        = "Mozilla/5.0 (Windows NT 10.0; Win64; x64)";
+                byte[] data; string mime;
+                using (var resp = (System.Net.HttpWebResponse)req.GetResponse())
+                using (var rs = resp.GetResponseStream()) {
+                    mime = resp.ContentType;
+                    var ms = new MemoryStream();
+                    rs.CopyTo(ms);
+                    data = ms.ToArray();
+                }
+                string fileName = null;
+                try { fileName = Uri.UnescapeDataString(Path.GetFileName(new Uri(src).AbsolutePath)); } catch {}
+                string ext = IsImageName(fileName) ? Path.GetExtension(fileName).ToLowerInvariant() : null;
+                if (ext == null) { ext = ExtFromMime(mime); fileName = null; }
+                if (ext == null || data.Length == 0) return "![](" + src + ")";
+                string name = AttachName(fileName, ext);
+                File.WriteAllBytes(Path.Combine(AttachDir(), name), data);
+                return EmbedFor(name);
+            } catch { return "![](" + src + ")"; }
+        }
+        return null;
     }
 
     string ResolveFolder() {
@@ -809,9 +1729,7 @@ public class CaptureForm : Form {
 
     protected override void OnShown(EventArgs e) {
         base.OnShown(e);
-        Activate();
-        try { SetForegroundWindow(Handle); } catch {}
-        box.Focus();
+        ForceFocus();
 
         int n = st.CapFlash;
         try {
@@ -928,7 +1846,7 @@ public class MainForm : Form {
         poll = new Timer { Interval = 40 };
         poll.Tick += OnPoll;
 
-        if (!firstRun) { Nav.Ensure(settings); RegisterHotkeys(); UpdateTrayText(); }
+        if (!firstRun) { Nav.Ensure(settings); ClipMemory.Purge(settings); RegisterHotkeys(); UpdateTrayText(); }
         else tray.Text = "Obsiclipcapture — настройка...";
     }
 
@@ -941,6 +1859,7 @@ public class MainForm : Form {
         }
         if (string.IsNullOrEmpty(settings.VaultPath)) { Application.Exit(); return; }
         Nav.Ensure(settings);
+        ClipMemory.Purge(settings);
         RegisterHotkeys(); UpdateTrayText(); firstRun = false;
     }
 
@@ -1028,7 +1947,7 @@ public class MainForm : Form {
             return;
         }
         if (capForm != null && !capForm.IsDisposed) {
-            try { capForm.Activate(); } catch {}
+            try { capForm.ForceFocus(); } catch {}
             return;
         }
         try {
@@ -1037,6 +1956,18 @@ public class MainForm : Form {
             capForm.Show();
         } catch (Exception ex) {
             try { tray.ShowBalloonTip(6000, "Obsiclipcapture", ex.Message, ToolTipIcon.Error); } catch {}
+        }
+    }
+
+    // 0 — отмена, 1 — в ту же заметку, 2 — в новую
+    int AskSameNote(string host, ClipMemory.Rec rec, string folder) {
+        var shown = new List<string>();
+        foreach (string f in rec.Folders) shown.Add(ClipMemory.Pretty(f));
+        string known = (shown.Count == 0) ? "пока нет" : string.Join("\r\n", shown.ToArray());
+        using (SameNoteForm dlg = new SameNoteForm(host, Path.GetFileName(rec.Rel),
+                   ClipMemory.Pretty(folder), known, settings.ClipSameNoteHours)) {
+            dlg.ShowDialog();
+            return dlg.Answer;
         }
     }
 
@@ -1053,6 +1984,62 @@ public class MainForm : Form {
         foreach (char c in Path.GetInvalidFileNameChars()) s = s.Replace(c.ToString(), "");
         s = s.Trim();
         return s.Length > 80 ? s.Substring(0, 80) : s;
+    }
+
+    // ── поиск заметки той же страницы (только папка клипов, верхний уровень) ──
+    static string NormSource(string s) {
+        s = (s ?? "").Trim();
+        if (s.Contains("://")) {
+            int h = s.IndexOf('#');
+            if (h >= 0) s = s.Substring(0, h);
+            s = s.TrimEnd('/');
+        }
+        return s;
+    }
+
+    static string Unquote(string v) {
+        v = (v ?? "").Trim();
+        if (v.Length >= 2 && ((v[0] == '"' && v[v.Length - 1] == '"') ||
+                              (v[0] == '\'' && v[v.Length - 1] == '\'')))
+            v = v.Substring(1, v.Length - 2);
+        return v.Trim();
+    }
+
+    string FindSameNote(string dir, string source) {
+        string want = NormSource(source);
+        if (want.Length == 0) return null;
+        string[] files;
+        try { files = Directory.GetFiles(dir, "*.md", SearchOption.TopDirectoryOnly); }
+        catch { return null; }
+        string best = null;
+        DateTime bestTime = DateTime.MinValue;
+        foreach (string f in files) {
+            try {
+                string src = null;
+                using (var fs = new FileStream(f, FileMode.Open, FileAccess.Read,
+                                               FileShare.ReadWrite | FileShare.Delete))
+                using (var rd = new StreamReader(fs, Encoding.UTF8)) {
+                    string line;
+                    int n = 0, dashes = 0;
+                    while (n++ < 40 && (line = rd.ReadLine()) != null) {
+                        if (line.Trim() == "---") {
+                            if (++dashes >= 2) break;  // конец frontmatter
+                            continue;
+                        }
+                        if (line.StartsWith("source:", StringComparison.Ordinal)) {
+                            src = Unquote(line.Substring(7)); break;
+                        }
+                    }
+                }
+                if (src == null) continue;
+                if (!string.Equals(NormSource(src), want, StringComparison.OrdinalIgnoreCase)) continue;
+                int hours = settings.ClipSameNoteHours;
+                if (hours > 0 && DateTime.Now - File.GetCreationTime(f) > TimeSpan.FromHours(hours)) continue;
+                DateTime wt = File.GetLastWriteTime(f);
+                if (best == null || wt > bestTime) { best = f; bestTime = wt; }
+            } catch {}
+        }
+        return best;
     }
 
     string SafeGetText() {
@@ -1167,6 +2154,58 @@ public class MainForm : Form {
             if (File.Exists(path)) path = Path.Combine(dir, name + " " + ts + ".md");
 
             string body      = string.IsNullOrEmpty(imgEmbed) ? txt : imgEmbed;
+
+            // ── 4. Куда писать: в существующую заметку или в новую ──
+            //   · та же страница: дописываем молча (как раньше);
+            //   · тот же сайт, папка адреса уже подтверждена: молча;
+            //   · тот же сайт, другая папка: окно с выбором;
+            //   · «В новую»: вопросы по сайту молчат до конца окна времени.
+            string sameNote   = null;
+            string siteHost   = null;
+            string siteFolder = null;
+            if (settings.ClipSameNote) {
+                sameNote = FindSameNote(dir, source);
+                if (ClipMemory.ParseUrl(source, out siteHost, out siteFolder)
+                        && sameNote == null
+                        && !ClipMemory.IsMuted(siteHost, settings.ClipSameNoteHours)) {
+                    ClipMemory.Rec rec = ClipMemory.FindForHost(settings, siteHost);
+                    if (rec != null) {
+                        if (rec.HasFolder(siteFolder)) {
+                            sameNote = ClipMemory.FullPath(settings, rec);
+                        } else {
+                            RestoreClipboard(prevText);
+                            int ans = AskSameNote(siteHost, rec, siteFolder);
+                            if (ans == SameNoteForm.AnsCancel) return;
+                            if (ans == SameNoteForm.AnsSame) {
+                                ClipMemory.Confirm(settings, rec.Rel, siteFolder);
+                                sameNote = ClipMemory.FullPath(settings, rec);
+                            } else {
+                                ClipMemory.Mute(siteHost);
+                            }
+                        }
+                    }
+                }
+            }
+            if (sameNote != null) {
+                string old = File.ReadAllText(sameNote, Encoding.UTF8).TrimEnd('\r', '\n');
+                File.WriteAllText(sameNote, old + (settings.ClipSeparator ?? AppSettings.DefaultClipSeparator)
+                                  + body + "\n", Encoding.UTF8);
+                RestoreClipboard(prevText);
+
+                string vName = Path.GetFileName(settings.VaultPath.TrimEnd('\\', '/'));
+                string rPath = sameNote.Substring(settings.VaultPath.Length)
+                                       .TrimStart('\\', '/').Replace('\\', '/');
+                string label = "Дописано: " + Path.GetFileName(sameNote);
+                try {
+                    string goUri = "obsidian://open?vault=" + Uri.EscapeDataString(vName)
+                                 + "&file=" + Uri.EscapeDataString(rPath);
+                    new NotePopup(label, goUri).Show();
+                } catch {
+                    try { tray.ShowBalloonTip(3000, "OK", label, ToolTipIcon.Info); } catch {}
+                }
+                return;
+            }
+
             string dateProp  = settings.DatePropName ?? "date";
             string extraProps = "";
             foreach (string[] p in settings.Props)
@@ -1182,6 +2221,9 @@ public class MainForm : Form {
             string vaultName = Path.GetFileName(settings.VaultPath.TrimEnd('\\', '/'));
             string relPath   = path.Substring(settings.VaultPath.Length)
                                    .TrimStart('\\', '/').Replace('\\', '/');
+
+            if (settings.ClipSameNote && siteHost != null)
+                ClipMemory.Register(settings, relPath, siteHost, DateTime.Now);
 
             if (!string.IsNullOrEmpty(settings.TemplaterCmd)) {
                 try {
@@ -1227,6 +2269,7 @@ public class MainForm : Form {
 }
 '@ -ReferencedAssemblies "System.Windows.Forms","System.Drawing" -ErrorAction Stop
     Write-Log "Add-Type OK"
+    [Diag]::LogPath = $LogFile
 } catch {
     Write-Log "FATAL Add-Type: $_"
     [System.Windows.Forms.MessageBox]::Show(
